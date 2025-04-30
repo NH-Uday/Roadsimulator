@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to Roadsimulator</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="icon" type="image/x-icon" href="/static/Roadsimulator.png">
+</head>
+
+<body>
+  <!-- ------------------------------------------------ controls -->
+  <div id="controls">
+    <input type="date"   id="dateInput"    placeholder="YYYY-MM-DD" />
+    <select id="trafficSelect" style="margin-left:6px">
+      <option value="">– Verkehrszeiten –</option>
+      <option value="morgendliche Hauptverkehrszeit">morgendliche Hauptverkehrszeit</option>
+      <option value="morgendliche Nebenverkehrszeit">morgendliche Nebenverkehrszeit</option>
+      <option value="abendliche Hauptverkehrszeit">abendliche Hauptverkehrszeit</option>
+      <option value="abendliche Nebenverkehrszeit">abendliche Nebenverkehrszeit</option>
+    </select>
+    <select id="metricSelect" style="margin-left:6px">
+      <option value="">– Kennzahl wählen –</option>
+      <option value="buffertime_mean_index">buffertime_mean_index</option>
+      <option value="sd_traveltime">sd_traveltime</option>
+      <option value="velocity_65">velocity_65</option>
+      <option value="verlustzeit_pro_km">verlustzeit_pro_km</option>
+    </select>
+    <button id="btnMetricRefresh" style="margin-left:6px">
+      Refresh
+    </button>
+  </div>
+
+  <div id="title"></div>
+  <div id="map"></div>
+  <div id="verlustzeitTable" style="padding:10px;"></div>
+
+  <!-- ------------------------------------------------ scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script src="/static/main.js"></script>
+</body>
+</html>
