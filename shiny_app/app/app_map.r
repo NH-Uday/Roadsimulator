@@ -139,18 +139,23 @@ ui <- dashboardPage(
             div(class = "box",
               div(class = "box-header with-border", h3(class = "box-title", "Filter Options")),
               div(class = "box-body",
-                div(class = "filter-section",
-                  div(class = "filter-header", "Plot Configuration"),
-                  selectInput("plot_type", "Plot Type:",
-                    choices = c("Mean Travel Time" = "mean_travel_time",
-                                "Coefficient of Variation" = "covariation",
-                                "Buffer Time Index" = "buffer_time_index",
-                                "Perzentile" = "percentile")),
-                  selectInput("plot_style", "Plot Style:",
-                    choices = c("Summenh\u00e4ufigkeit (ECDF)" = "ecdf",
-                                "Histogram" = "histogram",
-                                "Density" = "density"), selected = "ecdf")
-                ),
+                  div(class = "filter-section",
+                      div(class = "filter-header", "Plot Configuration"),
+                      selectInput("plot_type", "Plot Type:",
+                                  choices = c("Mean Travel Time" = "mean_travel_time",
+                                              "Coefficient of Variation" = "covariation",
+                                              "Buffer Time Index" = "buffer_time_index",
+                                              "Perzentile" = "percentile",
+                                              "Speed vs Deviation" = "speed_deviation",
+                                              "Misery Index" = "misery_index",
+                                              "Breite"="breite",
+                                              "Schiefe"="schiefe",
+                                              "Unzuverlässigkeitsindikator"="unrealibility_indicator",
+                                              "Verlustzeit pro km"="verlustzeit")),
+                      selectInput("plot_style", "Plot Style:",
+                                  choices = c("cumulative frequency distribution" = "ecdf",
+                                              "Density" = "density", "Time Series"="time_series"), selected = "ecdf")
+                  ),
                 div(class = "filter-section",
                   div(class = "filter-header", "Network Section"),
                   numericInput("network_section", "Section ID:", value = 99, min = 1, max = 850)
@@ -166,12 +171,12 @@ ui <- dashboardPage(
                                  "abendliche Hauptverkehrszeit", "abendliche Nebenverkehrszeit"))
                 ),
                 div(class = "filter-section",
-                  div(class = "filter-header", "Months"),
-                  checkboxGroupInput("months", "Select Months:",
-                    choices = c("Januar", "Februar", "M\u00e4rz", "April", "Mai", "Juni",
-                                "Juli", "August", "September", "Oktober", "November", "Dezember"),
-                    selected = c("Januar", "Februar", "M\u00e4rz", "April", "Mai", "Juni",
-                                "Juli", "August", "September", "Oktober", "November", "Dezember"))
+                    div(class = "filter-header", "Months"),
+                    checkboxGroupInput("months", "Select Months:",
+                                       choices = c("January", "February", "March", "April", "May", "June",
+                                                   "July", "August", "September", "October", "November", "December"),
+                                       selected = c("January", "February", "March", "April", "May", "June",
+                                                    "July", "August", "September", "October", "November", "December"))
                 ),
                 div(class = "filter-section",
                   div(class = "filter-header", "Plot Size"),
@@ -341,12 +346,34 @@ server <- function(input, output, session) {
   
   data <- reactive({
 
-    #you will fetch the travel time data
     conn <- dbConnect(duckdb())
     dbExecute(conn, "Install icu; LOAD icu; set timezone='Europe/Berlin';")
+    dbExecute(conn, "install postgres; load postgres;install spatial;load spatial;")
+
     traveltimes_df <- dbGetQuery(conn, "
-    SELECT *
-    FROM read_parquet('/home/gut11/shiny_app/data/*.parquet');
+   select a.*,
+        (avg_traveltime - (60 * (laenge_netzabschnitt_km / velocity_65))) /
+       laenge_netzabschnitt_km as verlustzeit_pro_km,
+       misery_index,
+       (perc_9_traveltime - perc_10_traveltime) / perc_50_traveltime                                        as breite,
+       (perc_9_traveltime - perc_50_traveltime) / (perc_50_traveltime - perc_10_traveltime)                 as schiefe,
+       case
+       when (perc_9_traveltime - perc_50_traveltime) / (perc_50_traveltime - perc_10_traveltime) > 1 then
+       (perc_9_traveltime - perc_10_traveltime) / perc_50_traveltime
+       * ln((perc_9_traveltime - perc_50_traveltime) / (perc_50_traveltime - perc_10_traveltime)) /
+         laenge_netzabschnitt_km
+       else (perc_9_traveltime - perc_10_traveltime) / perc_50_traveltime /
+         laenge_netzabschnitt_km end                                                                 as unrealiblity_indicator
+from read_parquet('/home/gut11/shiny_app/data/indicators_fahrtzeitzuverlaessigkeit_fixed.parquet') a
+         INNER JOIN read_csv('/home/gut11/shiny_app/data/netzabschnitte_length_jtr.csv') b
+                    ON (a.netzabschnitt = b.netzabschnitt)
+         LEFT JOIN read_csv('/home/gut11/shiny_app/data/sollgeschwindigkeiten_freier_fluss.csv') c
+                   ON (a.netzabschnitt = c.netzabschnitts_id)
+         LEFT JOIN read_parquet('/home/gut11/shiny_app/data/misery_index.parquet') d
+                   ON (a.netzabschnitt = d.netzabschnitt AND a.wochentag = d.wochentag AND
+                       a.verkehrszeit_agg = d.verkehrszeit_agg)
+where sd_traveltime > 0
+  and avg_traveltime_velocity <= 110;
     ")
     
     dbDisconnect(conn)
@@ -354,16 +381,33 @@ server <- function(input, output, session) {
     if (!"wochentag" %in% names(traveltimes_df)) {
       stop("Column 'wochentag' not found in the dataset.")
     }
-    
-    monat_order <- c("Januar", "Februar", "März", "April", "Mai", "Juni", 
-                     "Juli", "August", "September", "Oktober", "November", "Dezember")
+    month_order <- c("January", "February", "March", "April", "May", "June", 
+                     "July", "August", "September", "October", "November", "December")
     
     #creating df and also filtering for one specific netzabschnitt ->
     traveltimes_df <- traveltimes_df %>%
       mutate(month = format(as.POSIXct(wochentag), "%B")) %>%
-      mutate(month = factor(month, levels = monat_order)) %>%
+      # Month names will be in the locale language of your system
+      # If your system is in German, you may need to convert them to English
+      # Uncomment the line below if your system outputs German month names
+       mutate(month = case_when(
+         month == "Januar" ~ "January",
+         month == "Februar" ~ "February",
+         month == "März" ~ "March",
+         month == "April" ~ "April",
+         month == "Mai" ~ "May",
+         month == "Juni" ~ "June",
+         month == "Juli" ~ "July",
+         month == "August" ~ "August",
+         month == "September" ~ "September",
+         month == "Oktober" ~ "October",
+         month == "November" ~ "November",
+         month == "Dezember" ~ "December",
+         TRUE ~ month
+       )) %>%
+      mutate(month = factor(month, levels = month_order)) %>%
       filter(month %in% input$months) %>%
-      filter(netzabschnitt == selected_section()) 
+      filter(netzabschnitt == selected_section())
     
     if ("verkehrszeit_agg" %in% names(traveltimes_df)) {
       traveltimes_df <- traveltimes_df %>% 
@@ -399,7 +443,23 @@ server <- function(input, output, session) {
                      <br><br>
                      <strong>Interpretation:</strong> Peaks in the density curve represent commonly occurring travel times. The width of the curve indicates the variability of travel times."))
       }
-    } else if (input$plot_type == "covariation") {
+    } 
+    if (input$plot_type == "misery_index") {
+      if (input$plot_style == "ecdf") {
+        return(HTML("<strong>Mean Travel Time Analysis (ECDF):</strong> This plot shows the cumulative distribution function of mean truck travel times. It indicates what percentage of observations have travel times below a certain threshold.
+                     <br><br>
+                     <strong>Interpretation:</strong> Steeper curves indicate less variability in travel times. Curves that are shifted to the right indicate longer travel times. When comparing different traffic periods, separated curves indicate different traffic conditions."))
+      } else if (input$plot_style == "histogram") {
+        return(HTML("<strong>Mean Travel Time Analysis (Histogram):</strong> This plot shows the frequency distribution of mean truck travel times. Each bar represents the count of observations within a specific range of travel times.
+                     <br><br>
+                     <strong>Interpretation:</strong> The shape of the histogram reveals the distribution pattern. Multiple peaks may indicate different traffic conditions or route characteristics."))
+      } else if (input$plot_style == "density") {
+        return(HTML("<strong>Mean Travel Time Analysis (Density):</strong> This plot shows the probability density function of mean truck travel times, providing a smoothed view of the distribution.
+                     <br><br>
+                     <strong>Interpretation:</strong> Peaks in the density curve represent commonly occurring travel times. The width of the curve indicates the variability of travel times."))
+      }
+    } 
+    else if (input$plot_type == "covariation") {
       if (input$plot_style == "ecdf") {
         return(HTML("<strong>Coefficient of Variation Analysis (ECDF):</strong> This plot shows the cumulative distribution of the coefficient of variation, which is a measure of relative variability (standard deviation divided by the mean).
                      <br><br>
@@ -432,6 +492,18 @@ server <- function(input, output, session) {
                    <br><br>
                    <strong>Interpretation:</strong> Comparing different percentiles helps understand the range and skewness of travel times. The 50th percentile is the median, while higher percentiles represent travel times during more congested conditions."))
     }
+    else if (input$plot_type == "speed_deviation") {
+      return(HTML("<strong>Speed vs Deviation Analysis:</strong> This plot shows the relationship between standard deviation of travel speed and average travel speed.
+               <br><br>
+               <strong>Interpretation:</strong> This visualization helps understand how travel speed variability relates to average speeds across different traffic periods. Points represent individual observations with higher density indicating more common conditions."))
+    }
+    else if (input$plot_style == "time_series") {
+      return(HTML("<strong>Buffer Time Index Analysis (Density):</strong> This plot shows the smoothed probability density of buffer time indices.
+                     <br><br>
+                     <strong>Interpretation:</strong> The curves reveal the distribution of buffer times needed for reliability. Comparing mean-based and median-based indices can show how outliers affect reliability assessments."))
+    }
+    
+    
   })
   output$travel_time_plot <- renderPlot({
     req(data())
@@ -452,7 +524,7 @@ server <- function(input, output, session) {
     
     if (input$plot_type == "mean_travel_time") {
       if (input$plot_style == "ecdf") {
-        p <- ggplot(data = df, aes(x = avg_traveltime, color = verkehrszeit_agg)) +
+        p <- ggplot(data = df, aes(x = avg_traveltime_velocity, color = verkehrszeit_agg)) +
           stat_ecdf() +
           theme_bw() +
           labs(
@@ -462,7 +534,7 @@ server <- function(input, output, session) {
             color = "Verkehrszeiten"
           )
       } else if (input$plot_style == "histogram") {
-        p <- ggplot(data = df, aes(x = avg_traveltime, fill = verkehrszeit_agg)) +
+        p <- ggplot(data = df, aes(x = avg_traveltime_velocity, fill = verkehrszeit_agg)) +
           geom_histogram(position = "dodge", alpha = 0.7, bins = 30) +
           theme_bw() +
           labs(
@@ -472,7 +544,7 @@ server <- function(input, output, session) {
             fill = "Verkehrszeiten"
           )
       } else if (input$plot_style == "density") {
-        p <- ggplot(data = df, aes(x = avg_traveltime, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
+        p <- ggplot(data = df, aes(x = avg_traveltime_velocity, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
           geom_density(alpha = 0.2) +
           theme_bw() +
           labs(
@@ -483,7 +555,321 @@ server <- function(input, output, session) {
             fill = "Verkehrszeiten"
           )
       }
+      
+      else if (input$plot_style=="time_series"){
+        
+        p <- ggplot(data=df, aes(x=wochentag, y=avg_traveltime_velocity, group=verkehrszeit_agg)) +
+          geom_line(color="gray50", alpha=0.2) +
+          stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+          stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          theme_bw() +
+          labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+               subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+               x="Wochentag", y="Verlustzeit pro Sekunde/km")
+
+      }
     } 
+
+      else if (input$plot_type == "misery_index") {
+        if (input$plot_style == "ecdf") {
+          p <- ggplot(data = df, aes(x = misery_index, color = verkehrszeit_agg)) +
+            stat_ecdf() +
+            theme_bw() +
+            labs(
+              title = paste0("Summenhäufigkeitsverteilungen der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+              x = "Mittlere Fahrtzeit in Minuten",
+              y = "Relativer Anteil",
+              color = "Verkehrszeiten"
+            )
+        } else if (input$plot_style == "histogram") {
+          p <- ggplot(data = df, aes(x = misery_index, fill = verkehrszeit_agg)) +
+            geom_histogram(position = "dodge", alpha = 0.7, bins = 30) +
+            theme_bw() +
+            labs(
+              title = paste0("Histogramm der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+              x = "Mittlere Fahrtzeit in Minuten",
+              y = "Häufigkeit",
+              fill = "Verkehrszeiten"
+            )
+        } else if (input$plot_style == "density") {
+          p <- ggplot(data = df, aes(x = misery_index, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
+            geom_density(alpha = 0.2) +
+            theme_bw() +
+            labs(
+              title = paste0("Dichteverteilung der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+              x = "Mittlere Fahrtzeit in Minuten",
+              y = "Dichte",
+              color = "Verkehrszeiten",
+              fill = "Verkehrszeiten"
+            )
+        }
+        
+        else if (input$plot_style=="time_series"){
+          
+          p <- ggplot(data=df, aes(x=wochentag, y=misery_index, group=verkehrszeit_agg)) +
+            geom_line(color="gray50", alpha=0.2) +
+            stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+            stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+            
+            # Add text annotations using the proper date values
+            # geom_text(data=stats_with_dates, 
+            #            mapping=aes(x=min_date, y=max_value, 
+            #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+            #          inherit.aes=FALSE,
+            #         hjust=0, vjust=1, size=3.5) +
+            
+            #facet_wrap(~verkehrszeit_agg, scales="free") +
+            theme_bw() +
+            labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+                 subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+  In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+                 x="Wochentag", y="Verlustzeit pro Sekunde/km")
+          
+        }
+      }
+  
+      else if (input$plot_type == "breite") {
+      if (input$plot_style == "ecdf") {
+        p <- ggplot(data = df, aes(x = breite, color = verkehrszeit_agg)) +
+          stat_ecdf() +
+          theme_bw() +
+          labs(
+            title = paste0("Summenhäufigkeitsverteilungen der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Relativer Anteil",
+            color = "Verkehrszeiten"
+          )
+      } else if (input$plot_style == "histogram") {
+        p <- ggplot(data = df, aes(x = breite, fill = verkehrszeit_agg)) +
+          geom_histogram(position = "dodge", alpha = 0.7, bins = 30) +
+          theme_bw() +
+          labs(
+            title = paste0("Histogramm der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Häufigkeit",
+            fill = "Verkehrszeiten"
+          )
+      } else if (input$plot_style == "density") {
+        p <- ggplot(data = df, aes(x = breite, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
+          geom_density(alpha = 0.2) +
+          theme_bw() +
+          labs(
+            title = paste0("Dichteverteilung der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Dichte",
+            color = "Verkehrszeiten",
+            fill = "Verkehrszeiten"
+          )
+      }
+      
+      else if (input$plot_style=="time_series"){
+        
+        p <- ggplot(data=df, aes(x=wochentag, y=breite, group=verkehrszeit_agg)) +
+          geom_line(color="gray50", alpha=0.2) +
+          stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+          stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          theme_bw() +
+          labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+               subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+  In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+               x="Wochentag", y="Verlustzeit pro Sekunde/km")
+        
+      }
+    } 
+  
+      else if (input$plot_type == "schiefe") {
+    if (input$plot_style == "ecdf") {
+      p <- ggplot(data = df, aes(x = schiefe, color = verkehrszeit_agg)) +
+        stat_ecdf() +
+        theme_bw() +
+        labs(
+          title = paste0("Summenhäufigkeitsverteilungen der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+          x = "Mittlere Fahrtzeit in Minuten",
+          y = "Relativer Anteil",
+          color = "Verkehrszeiten"
+        )
+    } else if (input$plot_style == "histogram") {
+      p <- ggplot(data = df, aes(x = schiefe, fill = verkehrszeit_agg)) +
+        geom_histogram(position = "dodge", alpha = 0.7, bins = 30) +
+        theme_bw() +
+        labs(
+          title = paste0("Histogramm der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+          x = "Mittlere Fahrtzeit in Minuten",
+          y = "Häufigkeit",
+          fill = "Verkehrszeiten"
+        )
+    } else if (input$plot_style == "density") {
+      p <- ggplot(data = df, aes(x = schiefe, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
+        geom_density(alpha = 0.2) +
+        theme_bw() +
+        labs(
+          title = paste0("Dichteverteilung der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+          x = "Mittlere Fahrtzeit in Minuten",
+          y = "Dichte",
+          color = "Verkehrszeiten",
+          fill = "Verkehrszeiten"
+        )
+    }
+    
+    else if (input$plot_style=="time_series"){
+      
+      p <- ggplot(data=df, aes(x=wochentag, y=schiefe, group=verkehrszeit_agg)) +
+        geom_line(color="gray50", alpha=0.2) +
+        stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+        stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+        
+        # Add text annotations using the proper date values
+        # geom_text(data=stats_with_dates, 
+        #            mapping=aes(x=min_date, y=max_value, 
+        #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+        #          inherit.aes=FALSE,
+        #         hjust=0, vjust=1, size=3.5) +
+        
+        #facet_wrap(~verkehrszeit_agg, scales="free") +
+        theme_bw() +
+        labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+             subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+  In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+             x="Wochentag", y="Verlustzeit pro Sekunde/km")
+      
+    }
+  } 
+
+    else if (input$plot_type == "unrealibility_indicator") {
+      if (input$plot_style == "ecdf") {
+        p <- ggplot(data = df, aes(x = unrealiblity_indicator, color = verkehrszeit_agg)) +
+          stat_ecdf() +
+          theme_bw() +
+          labs(
+            title = paste0("Summenhäufigkeitsverteilungen der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Relativer Anteil",
+            color = "Verkehrszeiten"
+          )
+      } else if (input$plot_style == "histogram") {
+        p <- ggplot(data = df, aes(x = unrealiblity_indicator, fill = verkehrszeit_agg)) +
+          geom_histogram(position = "dodge", alpha = 0.7, bins = 30) +
+          theme_bw() +
+          labs(
+            title = paste0("Histogramm der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Häufigkeit",
+            fill = "Verkehrszeiten"
+          )
+      } else if (input$plot_style == "density") {
+        p <- ggplot(data = df, aes(x = unrealiblity_indicator, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
+          geom_density(alpha = 0.2) +
+          theme_bw() +
+          labs(
+            title = paste0("Dichteverteilung der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Dichte",
+            color = "Verkehrszeiten",
+            fill = "Verkehrszeiten"
+          )
+      }
+      
+      else if (input$plot_style=="time_series"){
+        
+        p <- ggplot(data=df, aes(x=wochentag, y=unrealiblity_indicator, group=verkehrszeit_agg)) +
+          geom_line(color="gray50", alpha=0.2) +
+          stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+          stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          theme_bw() +
+          labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+               subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+               x="Wochentag", y="Verlustzeit pro Sekunde/km")
+        
+      }
+    } 
+    
+
+    else if (input$plot_type == "verlustzeit") {
+      if (input$plot_style == "ecdf") {
+        p <- ggplot(data = df, aes(x = verlustzeit_pro_km, color = verkehrszeit_agg)) +
+          stat_ecdf() +
+          theme_bw() +
+          labs(
+            title = paste0("Summenhäufigkeitsverteilungen der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Relativer Anteil",
+            color = "Verkehrszeiten"
+          )
+      } else if (input$plot_style == "histogram") {
+        p <- ggplot(data = df, aes(x = verlustzeit_pro_km, fill = verkehrszeit_agg)) +
+          geom_histogram(position = "dodge", alpha = 0.7, bins = 30) +
+          theme_bw() +
+          labs(
+            title = paste0("Histogramm der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Häufigkeit",
+            fill = "Verkehrszeiten"
+          )
+      } else if (input$plot_style == "density") {
+        p <- ggplot(data = df, aes(x = verlustzeit_pro_km, color = verkehrszeit_agg, fill = verkehrszeit_agg)) +
+          geom_density(alpha = 0.2) +
+          theme_bw() +
+          labs(
+            title = paste0("Dichteverteilung der mittleren Lkw-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Mittlere Fahrtzeit in Minuten",
+            y = "Dichte",
+            color = "Verkehrszeiten",
+            fill = "Verkehrszeiten"
+          )
+      }
+      
+      else if (input$plot_style=="time_series"){
+        
+        p <- ggplot(data=df, aes(x=wochentag, y=verlustzeit_pro_km, group=verkehrszeit_agg)) +
+          geom_line(color="gray50", alpha=0.2) +
+          stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+          stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          theme_bw() +
+          labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+               subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+  In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+               x="Wochentag", y="Verlustzeit pro Sekunde/km")
+        
+      }
+    }
     
     else if (input$plot_type == "covariation") {
       if (input$plot_style == "ecdf") {
@@ -517,6 +903,28 @@ server <- function(input, output, session) {
             color = "Verkehrszeiten",
             fill = "Verkehrszeiten"
           )
+      }
+      else if (input$plot_style=="time_series") {
+        
+        p <- ggplot(data=df, aes(x=wochentag, y=covariation, group=verkehrszeit_agg)) +
+          geom_line(color="gray50", alpha=0.2) +
+          stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+          stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          theme_bw() +
+          labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+               subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+               x="Wochentag", y="Verlustzeit pro Sekunde/km")
+
       }
     } 
     
@@ -569,7 +977,41 @@ server <- function(input, output, session) {
             fill = "Verkehrszeiten"
           )
       }
-    } 
+      else if (input$plot_style=="time_series"){
+        
+        p <- ggplot(data=df, aes(x=wochentag,group=verkehrszeit_agg)) +
+          geom_line(aes(y=buffertime_mean_index), color="red", alpha=0.8) +
+          geom_line(aes(y=buffertime_median_index), color="blue", alpha=0.8) +
+          #stat_summary(aes(group=1), fun=mean, geom="line", color="red", size=1) +
+          #stat_summary(aes(group=1), fun=median, geom="line", color="blue", size=1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          theme_bw() +
+          labs(title="Ermittelte Verlustzeit in der morgendlichen Hauptverkehrszeit je Werktag und Netzabschnitt", 
+               subtitle = "In Rot: Die mittlere Verlustzeit je Wochentag und Netzabschnitt,
+In Blau: Median-Verlustzeit je Wochentag und Netzabschnitt",
+               x="Wochentag", y="Verlustzeit pro Sekunde/km")
+      }
+    }
+    
+    else if (input$plot_type == "speed_deviation") {
+      p <- ggplot(data = df, aes(x = sd_traveltime_velocity, y = avg_traveltime_velocity)) +
+        geom_point(alpha = .3, color = "grey50") + 
+        facet_wrap(~verkehrszeit_agg) +
+        labs(
+          title = paste0("Verhältnis zwischen Standardabweichung der Fahrtgeschwindigkeit und der mittleren Fahrtgeschwindigkeit auf dem Netzabschnitt ", section_id),
+          x = "Standardabweichung der Fahrtgeschwindikeit in km/h", 
+          y = "Mittlere Fahrtgeschwindigkeit in km/h"
+        ) +
+        theme_bw()
+    }
     
     
     else if (input$plot_type == "percentile") {
@@ -611,7 +1053,58 @@ server <- function(input, output, session) {
             x = "Fahrtzeit in Minuten",
             y = "Relativer Anteil"
           )
-      } else if (input$plot_style == "histogram" || input$plot_style == "density") {
+      }
+      
+      else if(input$plot_style=="time_series")  {
+        
+        percentile_labels <- c(
+          "P10" = "10. Perzentil",
+          "P15" = "15. Perzentil", 
+          "P20" = "20. Perzentil",
+          "P25" = "25. Perzentil", 
+          "P50" = "50. Perzentil (Median)",
+          "P75" = "75. Perzentil",
+          "P85" = "85. Perzentil",
+          "P90" = "90. Perzentil",
+          "P95" = "95. Perzentil",
+          "P99" = "99. Perzentil"
+        )
+        
+        p <- ggplot(data=df, aes(x=wochentag, group=verkehrszeit_agg)) +
+          geom_line(aes(y = perc_10_traveltime, color = "P10"), size = 1) +
+          geom_line(aes(y = perc_15_traveltime, color = "P15"), size = 1) +
+          geom_line(aes(y = perc_20_traveltime, color = "P20"), size = 1) +
+          geom_line(aes(y = perc_25_traveltime, color = "P25"), size = 1) +
+          geom_line(aes(y = perc_75_traveltime, color = "P75"), size = 1) +
+          geom_line(aes(y = perc_85_traveltime, color = "P85"), size = 1) +
+          geom_line(aes(y= perc_9_traveltime, color = "P90"), size = 1) +
+          geom_line(aes(y = perc_95_traveltime, color = "P95"), size = 1) +
+          geom_line(aes(y = perc_99_traveltime, color = "P99"), size = 1) +
+          
+          # Add text annotations using the proper date values
+          # geom_text(data=stats_with_dates, 
+          #            mapping=aes(x=min_date, y=max_value, 
+          #                       label=paste0("Mean: ", Mean, ", Median: ", Median)),
+          #          inherit.aes=FALSE,
+          #         hjust=0, vjust=1, size=3.5) +
+          
+          #facet_wrap(~verkehrszeit_agg, scales="free") +
+          scale_color_manual(name = "Perzentil", 
+                             values = c("P10" = "skyblue", "P15" = "royalblue", "P20" = "blue",
+                                        "P25" = "darkblue", "P50" = "green", "P75" = "yellow",
+                                        "P85" = "orange", "P90" = "darkorange", "P95" = "red", "P99" = "darkred"),
+                             labels = percentile_labels) +
+          theme_bw() +
+          labs(
+            title = paste0("Histogramm der Perzentil-Fahrtzeiten auf dem Netzabschnitt ", section_id),
+            x = "Fahrtzeit in Minuten",
+            y = "Häufigkeit",
+            fill = "Perzentil"
+          ) +
+          theme(legend.position = "bottom")
+      }
+      
+      else if (input$plot_style == "histogram" || input$plot_style == "density") {
         
         percentiles_long <- df %>%
           tidyr::pivot_longer(
