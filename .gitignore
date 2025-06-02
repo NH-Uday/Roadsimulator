@@ -31,17 +31,3 @@ my_duckdb
 .vscode-R/
 .duckdb/
 .gradel/
-R/
-data/
-data_showcase/
-shiny_app/app/rstudio-server-2024.12.1-563-amd64.deb
-shiny_app/app/.RData
-shiny_app/app/.Rhistory
-shiny_app/data/
-shiny_app/.RData
-shiny_app/.Rhistory
-Geoduck/_pycache_/
-Geoduck/my_duckdb.duckdb
-Geoduck/.authorized_keys.swp
-Geoduck/geojson/default_netz_data.geojson
-Geoduck/geojson/joined_netz_data.geojson
