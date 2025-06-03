@@ -31,4 +31,4 @@ my_duckdb
 .vscode-R/
 .duckdb/
 .gradel/
-shiny_app/data/
+shiny_app/data/*.parquet
