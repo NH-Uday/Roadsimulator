@@ -31,5 +31,4 @@ my_duckdb
 .vscode-R/
 .duckdb/
 .gradel/
-shiny_app/data/indicators_105.parquet
-shiny_app/data/indicators_fahrtzeitzuverlaessigkeit_fixed.parquet
+shiny_app/data/
