@@ -69,6 +69,27 @@ def metric_geojson():
         print("[ERROR /metric_geojson]", exc)
         return jsonify({"error": str(exc)}), 500
 
+@app.route('/fastest_route', methods=['POST'])
+def fastest_route():
+    data = request.get_json(force=True)
+    origin = data['origin']      # { "lat": 52.52, "lon": 13.40 }
+    dest   = data['destination'] # { "lat": 53.55, "lon": 10.01 }
+    date_iso     = data.get('date')        # e.g. "2025-06-03"
+    verkehrszeit = data.get('verkehrszeit')# e.g. "abendliche Hauptverkehrszeit"
+
+    node_path, path_edges, total_sec = rp.find_fastest_route(
+        origin['lat'], origin['lon'],
+        dest['lat'],   dest['lon'],
+        date_iso, verkehrszeit
+    )
+    if node_path is None:
+        return jsonify({"error":"no path found"}), 404
+
+    return jsonify({
+        "node_sequence": node_path,
+        "edges": path_edges,
+        "total_time_seconds": total_sec
+    }), 200
 
 
 if __name__ == "__main__":

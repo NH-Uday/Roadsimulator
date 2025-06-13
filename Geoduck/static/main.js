@@ -1,4 +1,6 @@
-// Initialize Leaflet map with zoom‐out and panning limits
+// Updated main.js with Fastest Route functionality
+
+// Initialize Leaflet map with zoom‑out and panning limits
 const germanyBounds = [
   [47.0, 5.5],   // southwest (lat, lon)
   [55.5, 16.5]   // northeast (lat, lon)
@@ -19,7 +21,11 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 let baseLayer;
 let metricLayer;
-let legend;  // for the color legend
+let legend;
+let routeLayer;      // polyline for the fastest route
+let routeMarkers = []; // markers for origin/destination selections
+let routeMode = false;
+let routePoints = [];
 
 // Create and configure a spinner element, initially hidden
 const spinner = document.createElement('div');
@@ -61,6 +67,19 @@ function showSpinner() {
 }
 function hideSpinner() {
   spinner.style.display = 'none';
+}
+
+/* -------- Haversine distance (km) -------- */
+function haversine(lat1, lon1, lat2, lon2) {
+  function toRad(x) { return x * Math.PI / 180; }
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 /* -------- Verlustzeit table renderer  -------- */
@@ -307,10 +326,89 @@ function refreshMetricLayer() {
     });
 }
 
-/* -------- headline typing animation and button wiring ---------------------------------- */
+/* -------- Fastest Route selection and fetching ---------------------------------- */
+function enableRouteMode() {
+  routeMode = true;
+  routePoints = [];
+  routeMarkers.forEach(m => map.removeLayer(m));
+  routeMarkers = [];
+  if (routeLayer) {
+    map.removeLayer(routeLayer);
+    routeLayer = null;
+  }
+  alert('Please click to select ORIGIN and DESTINATION on the map');
+}
+
+function onMapClick(e) {
+  if (!routeMode) return;
+  const { lat, lng } = e.latlng;
+  routePoints.push([lat, lng]);
+
+  const marker = L.circleMarker([lat, lng], { radius: 6, color: 'red' }).addTo(map);
+  routeMarkers.push(marker);
+
+  if (routePoints.length === 2) {
+    routeMode = false;
+    fetchRoute();
+  }
+}
+
+function fetchRoute() {
+  const [origin, dest] = routePoints;
+  const payload = {
+    origin: { lat: origin[0], lon: origin[1] },
+    destination: { lat: dest[0], lon: dest[1] },
+    date: isoDate(),
+    verkehrszeit: vz()
+  };
+  showSpinner();
+  fetch('/fastest_route', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+    .then(r => r.json())
+    .then(data => {
+      hideSpinner();
+      if (data.error) {
+        alert('No route found');
+        return;
+      }
+      // Draw polyline
+      const coords = data.node_sequence.map(n => [n[1], n[0]]); // convert [lon,lat] to [lat,lon]
+      routeLayer = L.polyline(coords, { color: 'blue', weight: 5 }).addTo(map);
+
+      // Calculate total distance
+      let totalKm = 0;
+      for (let i = 0; i < coords.length - 1; i++) {
+        totalKm += haversine(
+          coords[i][0], coords[i][1],
+          coords[i+1][0], coords[i+1][1]
+        );
+      }
+      const totalMin = (data.total_time_seconds / 60).toFixed(1);
+
+      // Display in routeInfo div
+      const infoDiv = document.getElementById('routeInfo');
+      infoDiv.innerHTML = `
+        <strong>Fastest Route Details</strong><br>
+        Distance: ${totalKm.toFixed(2)} km<br>
+        Estimated Time: ${totalMin} minutes
+      `;
+    })
+    .catch(err => {
+      hideSpinner();
+      console.error('Route fetch error:', err);
+    });
+}
+
+map.on('click', onMapClick);
+
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnMetricRefresh')
           .addEventListener('click', refreshMetricLayer);
+  document.getElementById('btnRoute')
+          .addEventListener('click', enableRouteMode);
 
   // Typing animation for the title (using textContent to preserve spaces correctly)
   const t = 'Welcome to Roadsimulator';
