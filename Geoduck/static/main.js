@@ -8,7 +8,7 @@ const germanyBounds = [
 
 const map = L.map('map', {
   center: [51.1657, 10.4515],
-  zoom: 6,
+  zoom: 7,
   preferCanvas: true,
   minZoom: 5,                // prevent zooming out too far
   maxBounds: germanyBounds,  // constrain panning to this box
@@ -95,7 +95,7 @@ function renderVerlustzeit(rows) {
   let html = '<table border="1"><thead><tr>' +
              cols.map(c => `<th>${c}</th>`).join('') +
              '</tr></thead><tbody>';
-  rows.forEach(r => {
+  rows.slice(0,10).forEach(r => {
     html += '<tr>' +
             cols.map(c => `<td>${r[c] ?? ''}</td>`).join('') +
             '</tr>';
@@ -351,55 +351,6 @@ function onMapClick(e) {
     routeMode = false;
     fetchRoute();
   }
-}
-
-function fetchRoute() {
-  const [origin, dest] = routePoints;
-  const payload = {
-    origin: { lat: origin[0], lon: origin[1] },
-    destination: { lat: dest[0], lon: dest[1] },
-    date: isoDate(),
-    verkehrszeit: vz()
-  };
-  showSpinner();
-  fetch('/fastest_route', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  })
-    .then(r => r.json())
-    .then(data => {
-      hideSpinner();
-      if (data.error) {
-        alert('No route found');
-        return;
-      }
-      // Draw polyline
-      const coords = data.node_sequence.map(n => [n[1], n[0]]); // convert [lon,lat] to [lat,lon]
-      routeLayer = L.polyline(coords, { color: 'blue', weight: 5 }).addTo(map);
-
-      // Calculate total distance
-      let totalKm = 0;
-      for (let i = 0; i < coords.length - 1; i++) {
-        totalKm += haversine(
-          coords[i][0], coords[i][1],
-          coords[i+1][0], coords[i+1][1]
-        );
-      }
-      const totalMin = (data.total_time_seconds / 60).toFixed(1);
-
-      // Display in routeInfo div
-      const infoDiv = document.getElementById('routeInfo');
-      infoDiv.innerHTML = `
-        <strong>Fastest Route Details</strong><br>
-        Distance: ${totalKm.toFixed(2)} km<br>
-        Estimated Time: ${totalMin} minutes
-      `;
-    })
-    .catch(err => {
-      hideSpinner();
-      console.error('Route fetch error:', err);
-    });
 }
 
 map.on('click', onMapClick);
