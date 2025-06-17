@@ -74,6 +74,8 @@ Edit
 │   └── style.css        # Styling and animation
 ├── geojson/             # Output directory for generated GeoJSON
 ├── requirements.txt     # Python dependencies
+
+
 🌐 Key API Endpoints
 Method	Endpoint	Description
 POST	/init_db	Initializes tables in DuckDB
